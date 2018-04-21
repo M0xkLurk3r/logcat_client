@@ -2,6 +2,8 @@ package moe.bsod.logcat_client;
 
 import android.app.Service;
 import android.content.Intent;
+import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -13,10 +15,20 @@ import java.util.zip.InflaterInputStream;
 
 public class LogcatClientService extends Service {
 
+	public class LCBinder extends Binder {
+		public LogcatClientService getService() {
+			return LogcatClientService.this;
+		}
+		public String getCurrentStatus() {
+			return currentstatus;
+		}
+	}
+
 	public static final String LOGCAT_SERVICE_START = "LOGCAT_SERVICE_START";
 	public static final String LOGCAT_SERVICE_STOP = "LOGCAT_SERVICE_STOP";
 
 	public static String currentstatus = LOGCAT_SERVICE_STOP;
+	private final IBinder mBinder = new LCBinder();
 
 	private String mRESTfulAPI = null;
 	private int mScarchPid = -1;
@@ -29,18 +41,49 @@ public class LogcatClientService extends Service {
 	@Override
 	public IBinder onBind(Intent intent) {
 		// TODO: Return the communication channel to the service.
-		throw new UnsupportedOperationException("Not yet implemented");
+		return mBinder;
+	}
+
+	public static String getLogcatCmdLine(int pid) {
+		if (Build.VERSION.SDK_INT < 23)
+			return "logcat | grep \"\\(\\ *" + String.valueOf(pid) + "\\)\"\n";
+		else
+			return
+			"logcat | while read LINE; do " +
+				"strarr=($LINE);" +
+				"pid=${strarr[2]};" +
+				"if [ \"$pid\" = \"" + String.valueOf(pid) + "\" ]; then " +
+					"echo $LINE;" +
+				"fi;" +
+			"done;\n";
+
 	}
 
 	@Override
 	public int onStartCommand(Intent intent, int flags, int startId) {
+
+		if (intent == null)
+			return START_NOT_STICKY;
+
 		String action = intent.getAction();
 
 		if (LOGCAT_SERVICE_START.equals(action)) {
+
+			int pid = intent.getIntExtra("target_pid", -1);
+			String restful = intent.getStringExtra("apiurl");
+
+			if (pid == -1 || restful == null) {
+				throw new IllegalArgumentException("Should pass `apiurl` and `target_pid` before start this service!");
+			}
+
+			mRESTfulAPI = restful;
+			mScarchPid = pid;
+
 			currentstatus = LOGCAT_SERVICE_START;
 			workerThread = new Thread(workerRunnable);
 			workerThread.setName("workerThread");
 			workerThread.start();
+
 			return START_STICKY;
 		} else if (LOGCAT_SERVICE_STOP.equals(action)) {
 			currentstatus = LOGCAT_SERVICE_STOP;
@@ -71,6 +114,7 @@ public class LogcatClientService extends Service {
 	private Runnable workerRunnable = new Runnable() {
 		@Override
 		public void run() {
+
 			if (mRESTfulAPI == null) {
 				throw new IllegalStateException("Should place a valid mRESTfulAPI!");
 			}
@@ -86,7 +130,8 @@ public class LogcatClientService extends Service {
 					ostream.writeBytes("logcat\n");
 					ostream.flush();
 				} else {
-					ostream.writeBytes("logcat | grep " + String.valueOf(mScarchPid) + "\n");
+					String command = getLogcatCmdLine(mScarchPid);
+					ostream.writeBytes(command);
 					ostream.flush();
 				}
 
@@ -98,6 +143,9 @@ public class LogcatClientService extends Service {
 						reportLog(rawbuf, 0, readed);
 					}
 				}
+
+				proc.destroy();
+
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
